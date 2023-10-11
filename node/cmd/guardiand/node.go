@@ -177,6 +177,9 @@ var (
 	scrollRPC      *string
 	scrollContract *string
 
+	mantleRPC      *string
+	mantleContract *string
+
 	sepoliaRPC      *string
 	sepoliaContract *string
 
@@ -342,6 +345,9 @@ func init() {
 	scrollRPC = NodeCmd.Flags().String("scrollRPC", "", "Scroll RPC URL")
 	scrollContract = NodeCmd.Flags().String("scrollContract", "", "Scroll contract address")
 
+	mantleRPC = NodeCmd.Flags().String("mantleRPC", "", "Mantle RPC URL")
+	mantleContract = NodeCmd.Flags().String("mantleContract", "", "Mantle contract address")
+
 	baseRPC = NodeCmd.Flags().String("baseRPC", "", "Base RPC URL")
 	baseContract = NodeCmd.Flags().String("baseContract", "", "Base contract address")
 
@@ -495,6 +501,7 @@ func runNode(cmd *cobra.Command, args []string) {
 		*baseContract = unsafeDevModeEvmContractAddress(*baseContract)
 		*sepoliaContract = unsafeDevModeEvmContractAddress(*sepoliaContract)
 		*scrollContract = unsafeDevModeEvmContractAddress(*scrollContract)
+		*mantleContract = unsafeDevModeEvmContractAddress(*mantleContract)
 	}
 
 	// Verify flags
@@ -630,6 +637,10 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	if (*scrollRPC == "") != (*scrollContract == "") {
 		logger.Fatal("Both --scrollContract and --scrollRPC must be set together or both unset")
+	}
+
+	if (*mantleRPC == "") != (*mantleContract == "") {
+		logger.Fatal("Both --mantleContract and --mantleRPC must be set together or both unset")
 	}
 
 	if *gatewayWS != "" {
@@ -860,6 +871,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	rpcMap["ibcWS"] = *ibcWS
 	rpcMap["karuraRPC"] = *karuraRPC
 	rpcMap["klaytnRPC"] = *klaytnRPC
+	rpcMap["mantleRPC"] = *mantleRPC
 	rpcMap["moonbeamRPC"] = *moonbeamRPC
 	rpcMap["nearRPC"] = *nearRPC
 	rpcMap["neonRPC"] = *neonRPC
@@ -1246,6 +1258,17 @@ func runNode(cmd *cobra.Command, args []string) {
 			ChainID:   vaa.ChainIDScroll,
 			Rpc:       *scrollRPC,
 			Contract:  *scrollContract,
+		}
+
+		watcherConfigs = append(watcherConfigs, wc)
+	}
+
+	if shouldStart(mantleRPC) {
+		wc := &evm.WatcherConfig{
+			NetworkID: "mantle",
+			ChainID:   vaa.ChainIDMantle,
+			Rpc:       *mantleRPC,
+			Contract:  *mantleContract,
 		}
 
 		watcherConfigs = append(watcherConfigs, wc)
