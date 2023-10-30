@@ -1,8 +1,9 @@
 use crate::{
     error::CoreBridgeError,
-    legacy::{instruction::VerifySignaturesArgs, utils::LegacyAnchorized},
-    state::{GuardianSet, SignatureSet},
+    legacy::instruction::VerifySignaturesArgs,
+    state::SignatureSet,
     types::MessageHash,
+    zero_copy::{GuardianSetAccount, LoadZeroCopy},
 };
 use anchor_lang::{prelude::*, solana_program::sysvar};
 use solana_program::program_memory::sol_memcpy;
@@ -39,19 +40,19 @@ pub struct VerifySignatures<'info> {
 
     /// Guardian set used for signature verification. These pubkeys were passed into the Sig Verify
     /// native program to do its signature verification.
-    #[account(
-        seeds = [GuardianSet::SEED_PREFIX, &guardian_set.index.to_be_bytes()],
-        bump,
-    )]
-    guardian_set: Account<'info, LegacyAnchorized<0, GuardianSet>>,
+    ///
+    /// CHECK: This address is derived using the guardian set account's encoded index. Because this
+    /// account is loaded via [LoadZeroCopy], the address is verified when it is loaded in access
+    /// control.
+    guardian_set: AccountInfo<'info>,
 
     /// Stores signature validation from Sig Verify native program.
     #[account(
         init_if_needed,
         payer = payer,
-        space = SignatureSet::compute_size(guardian_set.keys.len())
+        space = try_compute_size(&guardian_set)?
     )]
-    signature_set: Account<'info, LegacyAnchorized<0, SignatureSet>>,
+    signature_set: Account<'info, SignatureSet>,
 
     /// CHECK: Instruction sysvar used to read Sig Verify native program instruction data.
     #[account(
@@ -63,6 +64,11 @@ pub struct VerifySignatures<'info> {
     _rent: UncheckedAccount<'info>,
 
     system_program: Program<'info, System>,
+}
+
+fn try_compute_size(guardian_set_acc_info: &AccountInfo) -> Result<usize> {
+    let guardian_set = GuardianSetAccount::load(guardian_set_acc_info)?;
+    Ok(SignatureSet::compute_size(guardian_set.num_guardians()))
 }
 
 impl<'info> crate::legacy::utils::ProcessLegacyInstruction<'info, VerifySignaturesArgs>
@@ -83,7 +89,9 @@ impl<'info> VerifySignatures<'info> {
         // handler.
         let timestamp = Clock::get().map(Into::into)?;
         require!(
-            ctx.accounts.guardian_set.is_active(&timestamp),
+            GuardianSetAccount::load(&ctx.accounts.guardian_set)
+                .unwrap()
+                .is_active(&timestamp),
             CoreBridgeError::GuardianSetExpired
         );
 
@@ -145,8 +153,8 @@ fn verify_signatures(ctx: Context<VerifySignatures>, args: VerifySignaturesArgs)
     // We use this message hash later on.
     let message_hash = MessageHash::from(message);
     let signature_set = &mut ctx.accounts.signature_set;
-    let guardian_set = &ctx.accounts.guardian_set;
-    let guardians = &guardian_set.keys;
+    let guardian_set = GuardianSetAccount::load(&ctx.accounts.guardian_set).unwrap();
+    let num_guardians = guardian_set.num_guardians();
 
     // If the signature set account has not been initialized yet, establish the expected account
     // data (guardian set index used, hash and which indices have been verified).
@@ -154,7 +162,7 @@ fn verify_signatures(ctx: Context<VerifySignatures>, args: VerifySignaturesArgs)
         // Otherwise, verify that the guardian set index is what we expect from
         // the last time we wrote to the signature set account.
         require_eq!(
-            guardian_set.index,
+            guardian_set.index(),
             signature_set.guardian_set_index,
             CoreBridgeError::GuardianSetMismatch
         );
@@ -171,20 +179,17 @@ fn verify_signatures(ctx: Context<VerifySignatures>, args: VerifySignaturesArgs)
         // indication of verified signatures (via `sig_verify_successes`) written to this account
         // yet. If we reach this condition, we set the message hash and guardian set index because
         // we are assuming that the account is created with this instruction invocation.
-        signature_set.set_inner(
-            SignatureSet {
-                sig_verify_successes: vec![false; guardians.len()],
-                message_hash,
-                guardian_set_index: guardian_set.index,
-            }
-            .into(),
-        );
+        signature_set.set_inner(SignatureSet {
+            sig_verify_successes: vec![false; num_guardians],
+            message_hash,
+            guardian_set_index: guardian_set.index(),
+        });
     }
 
     // Attempt to write `true` to represent verified guardian eth pubkey.
     for (i, &signer_index) in guardian_indices.iter().enumerate() {
         require!(
-            signers.get(i) == guardians.get(signer_index),
+            signer_index < num_guardians && signers[i] == guardian_set.key(signer_index),
             CoreBridgeError::InvalidGuardianKeyRecovery
         );
 

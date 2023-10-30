@@ -5,6 +5,9 @@
 mod config;
 pub use config::*;
 
+mod guardian_set;
+pub use guardian_set::*;
+
 mod message;
 pub use message::*;
 

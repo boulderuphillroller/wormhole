@@ -1,8 +1,7 @@
 use crate::{
     error::CoreBridgeError,
-    legacy::utils::LegacyAnchorized,
-    state::{GuardianSet, Header, ProcessingStatus},
-    zero_copy::EncodedVaa,
+    state::{Header, ProcessingStatus},
+    zero_copy::{EncodedVaa, GuardianSetAccount, LoadZeroCopy},
 };
 use anchor_lang::prelude::*;
 use solana_program::{keccak, program_memory::sol_memcpy, secp256k1_recover::secp256k1_recover};
@@ -17,20 +16,22 @@ pub struct VerifyEncodedVaaV1<'info> {
     #[account(mut)]
     encoded_vaa: AccountInfo<'info>,
 
-    /// Guardian set account, which is only needed for signature verification.
-    #[account(
-        seeds = [GuardianSet::SEED_PREFIX, &guardian_set.index.to_be_bytes()],
-        bump,
-    )]
-    guardian_set: Account<'info, LegacyAnchorized<0, GuardianSet>>,
+    /// Guardian set account, which should be the same one that was used to attest for the VAA. The
+    /// signatures in the encoded VAA are verified against this guardian set.
+    ///
+    /// CHECK: This address is derived using the guardian set account's encoded index. Because this
+    /// account is loaded via [LoadZeroCopy], the address is verified when it is loaded in access
+    /// control.
+    guardian_set: AccountInfo<'info>,
 }
 
 impl<'info> VerifyEncodedVaaV1<'info> {
     fn constraints(ctx: &Context<Self>) -> Result<()> {
         // Guardian set must be active.
+        let guardian_set = GuardianSetAccount::load(&ctx.accounts.guardian_set)?;
         let timestamp = Clock::get().map(Into::into)?;
         require!(
-            ctx.accounts.guardian_set.is_active(&timestamp),
+            guardian_set.is_active(&timestamp),
             CoreBridgeError::GuardianSetExpired
         );
 
@@ -49,8 +50,6 @@ impl<'info> VerifyEncodedVaaV1<'info> {
 
 #[access_control(VerifyEncodedVaaV1::constraints(&ctx))]
 pub fn verify_encoded_vaa_v1(ctx: Context<VerifyEncodedVaaV1>) -> Result<()> {
-    let guardian_set = &ctx.accounts.guardian_set;
-
     let write_authority = {
         let encoded_vaa = EncodedVaa::parse_unverified(&ctx.accounts.encoded_vaa).unwrap();
         require!(
@@ -66,15 +65,16 @@ pub fn verify_encoded_vaa_v1(ctx: Context<VerifyEncodedVaaV1>) -> Result<()> {
         require_eq!(vaa.version(), 1, CoreBridgeError::InvalidVaaVersion);
 
         // Make sure the encoded guardian set index agrees with the guardian set account's index.
+        let guardian_set = GuardianSetAccount::load(&ctx.accounts.guardian_set).unwrap();
         require_eq!(
             vaa.guardian_set_index(),
-            guardian_set.index,
+            guardian_set.index(),
             CoreBridgeError::GuardianSetMismatch
         );
 
         // Do we have enough signatures for quorum?
-        let guardian_keys = &guardian_set.keys;
-        let quorum = crate::utils::quorum(guardian_keys.len());
+        let num_guardians = guardian_set.num_guardians();
+        let quorum = crate::utils::quorum(num_guardians);
         require!(
             usize::from(vaa.signature_count()) >= quorum,
             CoreBridgeError::NoQuorum
@@ -95,12 +95,10 @@ pub fn verify_encoded_vaa_v1(ctx: Context<VerifyEncodedVaaV1>) -> Result<()> {
             }
 
             // Does this guardian index exist in this guardian set?
-            let guardian_pubkey = guardian_keys
-                .get(index)
-                .ok_or_else(|| error!(CoreBridgeError::InvalidGuardianIndex))?;
+            require!(index < num_guardians, CoreBridgeError::InvalidGuardianIndex);
 
             // Now verify that the signature agrees with the expected Guardian's pubkey.
-            verify_guardian_signature(&sig, guardian_pubkey, digest.as_ref())?;
+            verify_guardian_signature(&sig, &guardian_set.key(index), digest.as_ref())?;
 
             last_guardian_index = Some(index);
         }

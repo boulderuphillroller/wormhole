@@ -4,7 +4,12 @@ const ROOT = `${__dirname}/..`;
 const CORE_BRIDGE_IDL = `${ROOT}/target/idl/wormhole_core_bridge_solana.json`;
 const CORE_BRIDGE_TYPES = `${ROOT}/target/types/wormhole_core_bridge_solana.ts`;
 
-const IGNORE_TYPES = ['"name": "MessageAccount"', '"name": "VaaAccount"', '"name": "VaaVersion"'];
+const IGNORE_TYPES = [
+  '"name": "GuardianSetAccount"',
+  '"name": "MessageAccount"',
+  '"name": "VaaAccount"',
+  '"name": "VaaVersion"',
+];
 
 main();
 

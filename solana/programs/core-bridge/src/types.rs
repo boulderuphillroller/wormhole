@@ -55,10 +55,16 @@ impl Timestamp {
         }
     }
 
-    /// Return the memory representation of this integer as a byte array in big-endian (network)
+    /// Return the memory representation of this underlying u32 value as a byte array in big-endian
     /// byte order.
     pub fn to_be_bytes(self) -> [u8; 4] {
         self.value.to_be_bytes()
+    }
+
+    /// Return the memory representation of this underlying u32 value as a byte array in little-
+    /// endian byte order.
+    pub fn to_le_bytes(self) -> [u8; 4] {
+        self.value.to_le_bytes()
     }
 }
 

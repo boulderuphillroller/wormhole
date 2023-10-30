@@ -35,7 +35,7 @@ pub struct Initialize<'info> {
         seeds = [GuardianSet::SEED_PREFIX, &INDEX_ZERO.to_be_bytes()],
         bump,
     )]
-    guardian_set: Account<'info, LegacyAnchorized<0, GuardianSet>>,
+    guardian_set: Account<'info, GuardianSet>,
 
     /// CHECK: System account that collects lamports whenever a new message is posted (published).
     #[account(
@@ -115,15 +115,12 @@ fn initialize(ctx: Context<Initialize>, args: InitializeArgs) -> Result<()> {
     );
 
     // Set guardian set account fields.
-    ctx.accounts.guardian_set.set_inner(
-        GuardianSet {
-            index: INDEX_ZERO,
-            creation_time: Clock::get().map(Into::into)?,
-            keys,
-            expiration_time: Default::default(),
-        }
-        .into(),
-    );
+    ctx.accounts.guardian_set.set_inner(GuardianSet {
+        index: INDEX_ZERO,
+        creation_time: Clock::get().map(Into::into)?,
+        keys,
+        expiration_time: Default::default(),
+    });
 
     Ok(())
 }

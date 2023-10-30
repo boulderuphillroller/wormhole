@@ -3,9 +3,10 @@ use crate::{
     legacy::{instruction::EmptyArgs, utils::LegacyAnchorized},
     state::{Config, GuardianSet},
     types::Timestamp,
-    zero_copy::{LoadZeroCopy, VaaAccount},
+    zero_copy::{GuardianSetAccount, LoadZeroCopy, VaaAccount},
 };
 use anchor_lang::prelude::*;
+use solana_program::program_memory::sol_memcpy;
 use wormhole_raw_vaas::core::CoreBridgeGovPayload;
 
 #[derive(Accounts)]
@@ -33,15 +34,12 @@ pub struct GuardianSetUpdate<'info> {
     claim: AccountInfo<'info>,
 
     /// Existing guardian set, whose guardian set index is the same one found in the [Config].
-    #[account(
-        mut,
-        seeds = [
-            GuardianSet::SEED_PREFIX,
-            &config.guardian_set_index.to_be_bytes()
-        ],
-        bump,
-    )]
-    curr_guardian_set: Account<'info, LegacyAnchorized<0, GuardianSet>>,
+    ///
+    /// CHECK: This address is derived using the guardian set account's encoded index. Because this
+    /// account is loaded via [LoadZeroCopy], the address is verified when it is loaded in access
+    /// control.
+    #[account(mut)]
+    curr_guardian_set: AccountInfo<'info>,
 
     /// New guardian set created from the encoded guardians in the posted governance VAA. This
     /// account's guardian set index must be the next value after the current guardian set index.
@@ -51,11 +49,11 @@ pub struct GuardianSetUpdate<'info> {
         space = try_compute_size(&vaa)?,
         seeds = [
             GuardianSet::SEED_PREFIX,
-            &curr_guardian_set.index.saturating_add(1).to_be_bytes()
+            &config.guardian_set_index.saturating_add(1).to_be_bytes()
         ],
         bump,
     )]
-    new_guardian_set: Account<'info, LegacyAnchorized<0, GuardianSet>>,
+    new_guardian_set: Account<'info, GuardianSet>,
 
     system_program: Program<'info, System>,
 }
@@ -84,12 +82,23 @@ impl<'info> GuardianSetUpdate<'info> {
         let vaa = VaaAccount::load(&ctx.accounts.vaa)?;
         let gov_payload = super::require_valid_governance_vaa(config, &vaa)?;
 
+        // Current guardian set's index must equal the config's.
+        //
+        // NOTE: Current guardian set's PDA address is re-derived when this account is loaded.
+        let curr_guardian_set = GuardianSetAccount::load(&ctx.accounts.curr_guardian_set)?;
+        require_eq!(
+            curr_guardian_set.index(),
+            config.guardian_set_index,
+            CoreBridgeError::GuardianSetNotCurrent
+        );
+
         // Encoded guardian set must be the next value after the current guardian set index.
         //
         // NOTE: Because try_compute_size already determined whether this governance payload is a
         // guardian set update, we are safe to unwrap here.
+        let new_index = gov_payload.guardian_set_update().unwrap().new_index();
         require_eq!(
-            gov_payload.guardian_set_update().unwrap().new_index(),
+            new_index,
             config.guardian_set_index + 1,
             CoreBridgeError::InvalidGuardianSetIndex
         );
@@ -153,23 +162,38 @@ fn guardian_set_update(ctx: Context<GuardianSetUpdate>, _args: EmptyArgs) -> Res
         VaaAccount::PostedVaaV1(inner) => inner.timestamp(),
     };
 
-    ctx.accounts.new_guardian_set.set_inner(
-        GuardianSet {
-            index: ctx.accounts.curr_guardian_set.index + 1,
-            creation_time,
-            keys,
-            expiration_time: Default::default(),
-        }
-        .into(),
-    );
-
     // Set the new index on the config program data.
-    let config = &mut ctx.accounts.config;
-    config.guardian_set_index += 1;
+    let guardian_set_index = &mut ctx.accounts.config.guardian_set_index;
+    *guardian_set_index += 1;
+
+    ctx.accounts.new_guardian_set.set_inner(GuardianSet {
+        index: *guardian_set_index,
+        creation_time,
+        keys,
+        expiration_time: Default::default(),
+    });
 
     // Now set the expiration time for the current guardian.
-    let now = Clock::get().map(Timestamp::from)?;
-    ctx.accounts.curr_guardian_set.expiration_time = now.saturating_add(&config.guardian_set_ttl);
+    {
+        // Depending on whether the guardian set account has a discriminator, determine the offset
+        // of where the expiration time is encoded.
+        let offset = match GuardianSetAccount::load(&ctx.accounts.curr_guardian_set).unwrap() {
+            GuardianSetAccount::Account(inner) => 20 + inner.num_guardians() * 20,
+            GuardianSetAccount::LegacyAccount(inner) => 12 + inner.num_guardians() * 20,
+        };
+
+        // The expiration time is determined by the clock's current timestamp (and not by the VAA
+        // timestamp).
+        //
+        // TODO: Fix this to remove saturating add.
+        let expiration_time = Clock::get().map(|clock| {
+            Timestamp::from(clock).saturating_add(&ctx.accounts.config.guardian_set_ttl)
+        })?;
+
+        // Now set the expiration time based on the Core Bridge's guardian set time-to-live value.
+        let acc_data: &mut [_] = &mut ctx.accounts.curr_guardian_set.data.borrow_mut();
+        sol_memcpy(&mut acc_data[offset..], &expiration_time.to_le_bytes(), 4);
+    }
 
     // Done.
     Ok(())
