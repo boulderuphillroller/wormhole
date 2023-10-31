@@ -4,7 +4,7 @@ use std::cell::Ref;
 
 use crate::{state, types::Timestamp};
 use anchor_lang::prelude::{
-    error, require, require_eq, require_keys_eq, AccountInfo, ErrorCode, Pubkey, Result,
+    error, require, require_keys_eq, AccountInfo, ErrorCode, Pubkey, Result,
 };
 
 pub(self) const ETH_PUBKEY_SIZE: usize = 20;
@@ -160,20 +160,8 @@ impl<'a> GuardianSet<'a> {
     }
 
     fn new(acc_info: &'a AccountInfo) -> Result<Self> {
-        let data = acc_info.try_borrow_data()?;
-
-        // There must be at least one guardian, which means the encoded key length is at least 1 and
-        // remanining bytes in the account are 24 (8 from discriminator + 16 from account schema).
-        require!(data.len() > 24, ErrorCode::AccountDidNotDeserialize);
-
-        let parsed = Self(data);
-
-        require_eq!(
-            parsed.0.len(),
-            24 + parsed.num_guardians() * ETH_PUBKEY_SIZE,
-            ErrorCode::AccountDidNotDeserialize
-        );
-
-        Ok(parsed)
+        // The discriminator and owner of this account will have been checked by this point, so this
+        // method is infallible.
+        acc_info.try_borrow_data().map(Self).map_err(Into::into)
     }
 }
