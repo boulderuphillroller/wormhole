@@ -39,6 +39,7 @@ import (
 	"github.com/certusone/wormhole/node/pkg/node"
 	"github.com/certusone/wormhole/node/pkg/p2p"
 	"github.com/certusone/wormhole/node/pkg/supervisor"
+	promremotew "github.com/certusone/wormhole/node/pkg/telemetry/prom_remote_write"
 	libp2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/cobra"
@@ -196,6 +197,11 @@ var (
 
 	// Loki cloud logging parameters
 	telemetryLokiURL *string
+
+	// Prometheus remote write parameters
+	promRemoteURL  *string
+	promRemoteUser *string
+	promRemoteKey  *string
 
 	chainGovernorEnabled *bool
 
@@ -361,6 +367,10 @@ func init() {
 		"Disable telemetry")
 
 	telemetryLokiURL = NodeCmd.Flags().String("telemetryLokiURL", "", "Loki cloud logging URL")
+
+	promRemoteURL = NodeCmd.Flags().String("promRemoteURL", "", "Prometheus remote write URL (Grafana)")
+	promRemoteUser = NodeCmd.Flags().String("promRemoteUser", "", "Prometheus remote write user name (Grafana)")
+	promRemoteKey = NodeCmd.Flags().String("promRemoteKey", "", "Prometheus remote write API key (Grafana)")
 
 	chainGovernorEnabled = NodeCmd.Flags().Bool("chainGovernorEnabled", false, "Run the chain governor")
 
@@ -1017,6 +1027,15 @@ func runNode(cmd *cobra.Command, args []string) {
 		if err != nil {
 			logger.Fatal("failed to connect to wormchain", zap.Error(err), zap.String("component", "gwrelayer"))
 		}
+
+	}
+	usingPromRemoteWrite := *promRemoteURL != ""
+	if usingPromRemoteWrite {
+		// Check that the user and key are set
+		if *promRemoteUser == "" || *promRemoteKey == "" {
+			logger.Fatal("Please specify --promRemoteUser and --promRemoteKey")
+		}
+		go func promremotew.StartPrometheusScraper(promRemoteURL, promRemoteUser, promRemoteKey, logger)
 	}
 
 	var watcherConfigs = []watchers.WatcherConfig{}
